@@ -74,6 +74,11 @@ class ReportSolver(SceneGraphSolver):
         if self.find("riic/manufacture"):
             try:
                 self.crop_report()
+                # 检查是否所有数据都是0，如果是则可能是识别失败
+                all_zero = all(value == 0 for value in self.report_res.values() if value is not None)
+                if all_zero and any(value is not None for value in self.report_res.values()):
+                    logger.warning("读取到的数据全为0，可能是识别失败，尝试备用方法")
+                    self.crop_report_backup()
                 logger.info(self.report_res)
                 self.record_report()
             except Exception as e:
@@ -201,6 +206,49 @@ class ReportSolver(SceneGraphSolver):
         )
         logger.info("订单数读取完成")
 
+    def crop_report_backup(self):
+        logger.info("使用备用方法读取基建报告")
+        exp_area = [[1625, 200], [1800, 230]]
+        iron_pos = self.find("riic/iron")
+        iron_area = [
+            [iron_pos[1][0], iron_pos[0][1]],
+            [1800, iron_pos[1][1]],
+        ]
+        trade_pt = self.find("riic/trade")
+        assist_pt = self.find("riic/assistants")
+        area = {
+            "iron_order": [[1620, trade_pt[1][1] + 10], [1740, assist_pt[0][1] - 50]],
+            "iron_order_number": [
+                [1820, trade_pt[1][1] + 10],
+                [1870, assist_pt[0][1] - 65],
+            ],
+            "orundum": [[1620, trade_pt[1][1] + 45], [1870, assist_pt[0][1]]],
+            "orundum_number": [
+                [1820, trade_pt[1][1] + 55],
+                [1860, assist_pt[0][1] - 20],
+            ],
+        }
+
+        img = cv2.cvtColor(self.recog.img, cv2.COLOR_RGB2HSV)
+        img = cv2.inRange(img, (95, 0, 100), (110, 255, 255))  # 扩大蓝色范围
+        self.report_res["作战录像"] = self.get_number(img, exp_area, height=19)
+        self.report_res["赤金"] = self.get_number(img, iron_area, height=19)
+        self.report_res["龙门币订单"] = self.get_number(
+            img, area["iron_order"], height=19
+        )
+        self.report_res["合成玉"] = self.get_number(img, area["orundum"], height=19)
+        logger.info("备用方法蓝字读取完成")
+
+        img = cv2.cvtColor(self.recog.img, cv2.COLOR_RGB2HSV)
+        img = cv2.inRange(img, (0, 0, 30), (120, 120, 200))  # 扩大灰色范围
+        self.report_res["龙门币订单数"] = self.get_number(
+            img, area["iron_order_number"], height=19, thres=200
+        )
+        self.report_res["合成玉订单数量"] = self.get_number(
+            img, area["orundum_number"], height=19, thres=200
+        )
+        logger.info("备用方法订单数读取完成")
+
     def get_number(
         self, img, scope: tp.Scope, height: int | None = 18, thres: int | None = 100
     ):
@@ -226,7 +274,6 @@ class ReportSolver(SceneGraphSolver):
                 im = noto_sans[i]
                 digit_h, digit_w = digit.shape[:2]
                 template_h, template_w = im.shape[:2]
-
                 if digit_h > template_h or digit_w > template_w:
                     scale_h = template_h / digit_h
                     scale_w = template_w / digit_w
@@ -234,18 +281,15 @@ class ReportSolver(SceneGraphSolver):
 
                     new_h, new_w = int(digit_h * scale), int(digit_w * scale)
                     digit = cv2.resize(digit, (new_w, new_w))
-
                     # 如果调整后的尺寸仍然大于模板尺寸(可能浮点数精度问题)，再次调整
                     if new_h > template_h or new_w > template_w:
                         scale = min(template_h/new_h, template_w/new_w) * 0.99
                         new_h, new_w = int(new_h * scale), int(new_w * scale)
                         digit = cv2.resize(digit, (new_w, new_h))
-
                 result = cv2.matchTemplate(digit, im, cv2.TM_SQDIFF_NORMED)
                 min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
                 score.append(min_val)
             value = value * 10 + score.index(min(score))
-
         return value
 
 
